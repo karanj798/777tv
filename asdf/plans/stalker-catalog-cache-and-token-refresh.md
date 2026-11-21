@@ -2,6 +2,10 @@
 
 Persona: @planner · Status: approved by user 2026-11-21 ("Approve plan — 3 day TTL")
 TTL decision: 3 days.
+Storage decision (confirmed by user 2026-11-21): JSON file in filesDir.
+SQLite was considered and rejected for this workload — the catalog is
+written whole, read whole, and expires whole; SQLite/Room becomes a
+candidate only for the future Ministra port (VOD/series/catch-up).
 
 ## Goal and user-visible behavior
 

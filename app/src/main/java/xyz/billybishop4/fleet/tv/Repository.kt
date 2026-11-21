@@ -4,7 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /** On-demand requests go to installed addons; Stalker remains an independent Live TV source. */
-class Repository(addons: List<Addon>, val http: Http = Http()) {
+class Repository(addons: List<Addon>, val http: Http = Http(), private val stalkerCatalogCache: StalkerCatalogFileCache? = null) {
     private val client = AddonClient(addons.toList(), http)
     private val cacheLock = Any()
     private var cacheEpoch = 0
@@ -74,7 +74,19 @@ class Repository(addons: List<Addon>, val http: Http = Http()) {
     suspend fun streams(title: Title, episode: Episode?): List<Stream> = client.streams(title, episode)
     fun artwork(url: String): String = url.takeIf(::isHttp).orEmpty()
 
-    suspend fun channels(provider: Provider): List<Channel> = withContext(Dispatchers.Default) { stalker.channels(provider) }
+    /**
+     * Stalker channels, served from the persistent catalog cache while it is
+     * fresh (see StalkerCatalogCodec.TTL_MS) unless [forceRefresh] is set.
+     * A cache miss or a forced refresh fetches the catalog live and rewrites
+     * the cache; cache read/write failures never fail the load itself.
+     */
+    suspend fun channels(provider: Provider, forceRefresh: Boolean = false): List<Channel> = withContext(Dispatchers.Default) {
+        val cache = stalkerCatalogCache
+        if (cache != null && !forceRefresh) runCatching { cache.read(provider) }.getOrNull()?.let { return@withContext it.channels }
+        val catalog = stalker.catalog(provider)
+        if (cache != null) runCatching { cache.write(provider, catalog) }
+        catalog.channels
+    }
     suspend fun liveWatch(p: Provider, c: Channel, refresh: Boolean = false): Watch = withContext(Dispatchers.Default) { stalker.watch(p, c, refresh) }
     suspend fun guide(p: Provider, c: Channel): List<GuideProgram> {
         val key = "${p.hashCode()}/${c.id}"

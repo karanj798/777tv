@@ -14,6 +14,7 @@ import org.json.JSONObject
 
 class Store(context: Context) {
     private val prefs = context.getSharedPreferences("fleet-tv", Context.MODE_PRIVATE)
+    private val filesDir = context.filesDir
     private var progressSource:String?=null
     private var progressEntries:List<Progress> = emptyList()
     var readWarning: String? = null; private set
@@ -93,7 +94,11 @@ class Store(context: Context) {
     fun resetProviders() {
         KeyStore.getInstance("AndroidKeyStore").apply { load(null); deleteEntry("fleet-tv-providers") }
         prefs.edit().remove("providers-encrypted").remove("hidden-channel-categories").apply()
+        stalkerCatalogCache().clearAll()
     }
+    /** Catalog cache rooted in app-private internal storage, never in SharedPreferences. */
+    fun stalkerCatalogCache(): StalkerCatalogFileCache = StalkerCatalogFileCache(java.io.File(filesDir, "stalker-catalog"))
+    fun deleteStalkerCatalog(provider: Provider) { stalkerCatalogCache().delete(provider) }
     fun addons():Result<List<Addon>> = runCatching {
         val blob=prefs.getString("addons-encrypted",null)?:return@runCatching defaultAddons()
         val parts=blob.split(':',limit=2);require(parts.size==2)
