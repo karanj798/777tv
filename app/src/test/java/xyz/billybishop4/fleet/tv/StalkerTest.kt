@@ -23,6 +23,8 @@ class StalkerTest {
         var invalidMedia = false
         var staleTotal = false
         var guideUnsupported = false
+        var bareRedirect = false
+        var bareProbe = false
         var strictTokens = false
         var tokens = 0
         init {
@@ -30,6 +32,12 @@ class StalkerTest {
                 override fun dispatch(r: RecordedRequest): MockResponse {
                     requests += r
                     val q = r.requestUrl!!; val action = q.queryParameter("action")
+                    if ((bareRedirect || bareProbe) && !q.encodedPath.startsWith("/stalker_portal/")) {
+                        if (action == null && q.encodedPath == "/" && bareRedirect)
+                            return MockResponse().setResponseCode(302).addHeader("Location", "/stalker_portal/c/")
+                        return MockResponse().setResponseCode(404)
+                    }
+                    if (bareRedirect && action == null && q.encodedPath == "/stalker_portal/c/") return MockResponse().setBody("<html>portal</html>")
                     if (fallback && q.encodedPath.endsWith("/server/load.php")) return MockResponse().setResponseCode(404)
                     if (malformed) return MockResponse().setBody("<html>wrong address</html>")
                     if (action != "handshake" && expire > 0) { expire--; return MockResponse().setResponseCode(401) }
@@ -59,6 +67,7 @@ class StalkerTest {
             server.start()
         }
         fun provider() = Provider("p", "Test", server.url("/stalker_portal/c/").toString(), mac = "00:1A:79:00:00:01")
+        fun bareProvider() = Provider("p", "Test", server.url("/").toString(), mac = "00:1A:79:00:00:01")
         fun repo() = Repository(emptyList())
         override fun close() = server.shutdown()
     }
@@ -104,6 +113,22 @@ class StalkerTest {
             assertEquals(c.command, f.requests.last().requestUrl!!.queryParameter("cmd"))
             assertEquals(2, f.tokens)
         }
+    }
+    @Test fun `discovery addresses follow redirects then ancestors without repeating endpoints`() {
+        val list = discoveryAddresses("https://p.example/", "https://p.example/stalker_portal/c/")
+        val endpoints = list.flatMap { it.endpoints }
+        assertEquals("https://p.example/server/load.php", endpoints.first())
+        assertEquals("https://p.example/stalker_portal/server/load.php", endpoints.first { it.contains("stalker_portal") })
+        assertEquals(endpoints.size, endpoints.toSet().size)
+        assertEquals(listOf("https://p.example/server/load.php", "https://p.example/portal.php"), discoveryAddresses("https://p.example/", null).flatMap { it.endpoints }.take(2))
+    }
+    @Test fun `bare root URL follows redirect to the real portal`() = runBlocking {
+        Portal().use { f -> f.bareRedirect = true; assertEquals(1, f.repo().channels(f.bareProvider()).size)
+            assertTrue(f.requests.any { it.requestUrl!!.encodedPath == "/stalker_portal/server/load.php" }) }
+    }
+    @Test fun `bare root URL without redirect is probed for the standard portal prefix`() = runBlocking {
+        Portal().use { f -> f.bareProbe = true; assertEquals(1, f.repo().channels(f.bareProvider()).size)
+            assertTrue(f.requests.any { it.requestUrl!!.encodedPath == "/stalker_portal/server/load.php" }) }
     }
     @Test fun `root URL falls back from load endpoint to portal endpoint`() = runBlocking {
         Portal().use { f -> f.fallback = true; assertEquals(1, f.repo().channels(f.provider()).size); assertTrue(f.requests.any { it.requestUrl!!.encodedPath.endsWith("/portal.php") }) }

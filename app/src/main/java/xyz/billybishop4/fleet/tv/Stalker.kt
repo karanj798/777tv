@@ -45,6 +45,35 @@ internal fun portalAddress(value: String): PortalAddress {
     return PortalAddress(endpoints, "$origin$root/c/", "$origin$root/")
 }
 
+/**
+ * Candidate portal addresses for discovery, best first: the entered address,
+ * the address its redirects land on, ancestor prefixes of both paths, and the
+ * well-known /stalker_portal/ prefix. Endpoints are deduplicated across
+ * candidates so no URL is handshaken twice.
+ */
+internal fun discoveryAddresses(entered: String, resolved: String?): List<PortalAddress> {
+    val out = mutableListOf<PortalAddress>(); val seen = mutableSetOf<String>()
+    fun add(value: String) {
+        val address = runCatching { portalAddress(value) }.getOrNull() ?: return
+        val fresh = address.endpoints.filter { seen.add(it) }
+        if (fresh.isNotEmpty()) out += address.copy(endpoints = fresh)
+    }
+    fun ancestors(value: String) {
+        val uri = runCatching { URI(value.trim()) }.getOrNull() ?: return
+        val origin = "${uri.scheme}://${uri.rawAuthority}"
+        var path = uri.rawPath.orEmpty().trimEnd('/')
+        while (path.isNotEmpty()) {
+            path = path.substringBeforeLast('/', "")
+            add(origin + path + "/")
+        }
+    }
+    add(entered)
+    if (!resolved.isNullOrBlank() && resolved != entered) { add(resolved); ancestors(resolved) }
+    ancestors(entered)
+    runCatching { URI(entered.trim()) }.getOrNull()?.let { add("${it.scheme}://${it.rawAuthority}/stalker_portal/") }
+    return out
+}
+
 private class ExpiredPortal : java.io.IOException()
 private class WrongEndpoint : java.io.IOException()
 
@@ -83,7 +112,7 @@ class StalkerClient(private val http: Http) {
     }
 
     private inner class Session(val p: Provider) {
-        val address = portalAddress(p.url)
+        var address = portalAddress(p.url)
         val agent = p.userAgent.ifBlank { "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG250 stbapp ver: 2 rev: 250 Safari/533.3" }
         private var endpoint = address.endpoints.first()
         private var token = ""
@@ -107,13 +136,7 @@ class StalkerClient(private val http: Http) {
             return result
         }
         suspend fun authenticate() {
-            var handshake: JSONObject? = null
-            for ((index, candidate) in address.endpoints.withIndex()) {
-                endpoint = candidate
-                try { handshake = call("stb", "handshake", mapOf("token" to "", "prehash" to "false")) as? JSONObject; break }
-                catch (e: WrongEndpoint) { if (index == address.endpoints.lastIndex) throw UserMessage("No Stalker API was found at this portal address.") }
-                catch (e: HttpFailure) { if (e.status !in listOf(404, 405) || index == address.endpoints.lastIndex) throw e }
-            }
+            val handshake = discoverHandshake()
             token = handshake?.optString("token").orEmpty()
             if (token.isBlank() || token.any { it == '\r' || it == '\n' }) throw ExpiredPortal()
             notValid = handshake?.optString("not_valid", "0") ?: "0"
@@ -126,6 +149,40 @@ class StalkerClient(private val http: Http) {
             }
             if (profile.optInt("status", 0) != 0 || profile.optInt("blocked", 0) != 0)
                 throw UserMessage("The portal rejected this account or device. Check your provider's registered MAC and device settings.")
+        }
+        /**
+         * Handshakes the entered address first. Only when it proves not to be a
+         * Stalker API (wrong content, 404/405) are discovered addresses tried:
+         * providers often hand out a bare domain that redirects to the real
+         * portal root. The winning candidate becomes this session's address.
+         */
+        private suspend fun discoverHandshake(): JSONObject? {
+            val candidates = mutableListOf(address)
+            var index = 0
+            while (index < candidates.size) {
+                val candidate = candidates[index]
+                val (answered, handshake) = tryHandshake(candidate)
+                if (answered) { address = candidate; return handshake }
+                index++
+                if (index == candidates.size && candidates.size == 1) candidates += discoveryCandidates()
+            }
+            throw UserMessage("No Stalker API was found at this portal address.")
+        }
+        /** @return answered=true when an endpoint responded as a Stalker API, even if it rejected the account. */
+        private suspend fun tryHandshake(candidate: PortalAddress): Pair<Boolean, JSONObject?> {
+            for ((index, candidateEndpoint) in candidate.endpoints.withIndex()) {
+                endpoint = candidateEndpoint
+                try { return true to (call("stb", "handshake", mapOf("token" to "", "prehash" to "false")) as? JSONObject) }
+                catch (e: WrongEndpoint) { if (index == candidate.endpoints.lastIndex) return false to null }
+                catch (e: HttpFailure) { if (e.status !in listOf(404, 405)) throw e; if (index == candidate.endpoints.lastIndex) return false to null }
+            }
+            return false to null
+        }
+        private suspend fun discoveryCandidates(): List<PortalAddress> {
+            val resolved = try { http.finalUrl(p.url, headers = mapOf("User-Agent" to agent, "Cookie" to cookie, "Referer" to address.referer)) }
+                catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                catch (e: Exception) { null }
+            return discoveryAddresses(p.url, resolved).drop(1)
         }
         private fun identity() = mapOf("sn" to p.serialNumber, "device_id" to p.deviceId, "device_id2" to p.deviceId2, "signature" to p.signature,
             "hw_version_2" to p.hwVersion2, "pin" to p.pin).filterValues { it.isNotBlank() }

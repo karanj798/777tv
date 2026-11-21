@@ -65,6 +65,41 @@ class Http {
             } catch (e: Exception) { if (continuation.isActive) continuation.resumeWithException(e) }
         })
     }
+    /** Follows redirects like [text] but returns only the final address; the body is never read. */
+    suspend fun finalUrl(url: String, timeout: Int = 15000,
+        headers: Map<String, String> = emptyMap()): String = suspendCancellableCoroutine { continuation ->
+        val connection = AtomicReference<HttpURLConnection?>()
+        val future = AtomicReference<Future<*>?>()
+        continuation.invokeOnCancellation { connection.get()?.disconnect(); future.get()?.cancel(true) }
+        future.set(workers.submit {
+            try {
+                var address = url; var requestHeaders = headers
+                for (redirect in 0..5) {
+                    if (!continuation.isActive) return@submit
+                    require(isHttp(address)) { "Enter a valid HTTP or HTTPS address." }
+                    require(requestHeaders.all { (k, v) -> !k.contains('\r') && !k.contains('\n') && !v.contains('\r') && !v.contains('\n') })
+                    val c = URL(address).openConnection() as HttpURLConnection
+                    connection.set(c)
+                    try {
+                        if (!continuation.isActive) return@submit
+                        c.instanceFollowRedirects = false; c.requestMethod = "GET"
+                        c.connectTimeout = timeout; c.readTimeout = timeout
+                        c.setRequestProperty("User-Agent", "FleetTV/0.5 (Android TV)")
+                        requestHeaders.forEach { (key, value) -> c.setRequestProperty(key, value) }
+                        val status = c.responseCode
+                        if (status in listOf(301, 302, 303, 307, 308)) {
+                            if (redirect == 5) throw IOException("Too many redirects")
+                            val next = URI(address).resolve(c.getHeaderField("Location") ?: throw IOException("Missing redirect address")).toString()
+                            if (!sameOrigin(address, next)) requestHeaders = requestHeaders.filterKeys { it.lowercase() !in setOf("authorization", "cookie", "proxy-authorization") }
+                            address = next; continue
+                        }
+                        if (continuation.isActive) continuation.resume(address)
+                        return@submit
+                    } finally { c.disconnect(); connection.compareAndSet(c, null) }
+                }
+            } catch (e: Exception) { if (continuation.isActive) continuation.resumeWithException(e) }
+        })
+    }
     companion object {
         private const val MAX_BYTES = 20 * 1024 * 1024
         private val workers = Executors.newFixedThreadPool(6) { r -> Thread(r, "fleet-http").apply { isDaemon = true } }
