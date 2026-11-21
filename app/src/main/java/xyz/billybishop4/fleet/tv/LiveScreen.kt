@@ -17,8 +17,8 @@ internal class ChannelsScreen(private val a: MainActivity, private val provider:
     private val m = a.model
     override val view = a.column()
     private val count = a.text("", 11f, MUTED)
-    private val grid = RecyclerView(a).apply { tag = "channels"; layoutManager = LinearLayoutManager(a); tune(cachedViews = 6) }
-    private val groups = RecyclerView(a).apply { tag = "groups"; layoutManager = LinearLayoutManager(a); tune() }
+    private val grid = wrapAwareList("channels", cachedViews = 6)
+    private val groups = wrapAwareList("groups")
     private val options = a.action("Options", "Live TV options") { showOptions() }.quiet()
     private val preview = FrameLayout(a).apply {
         tag = "channel-preview"; background = a.round(PANEL); clipToOutline = true
@@ -135,37 +135,54 @@ internal class ChannelsScreen(private val a: MainActivity, private val provider:
             val height = ((r - l) * 9 / 16).coerceAtLeast(a.dp(100))
             if (preview.layoutParams.height != height) preview.layoutParams = preview.layoutParams.apply { this.height = height }
         }
-        installWrapAround(groups) { groupAdapter.itemCount }
-        installWrapAround(grid) { adapter.itemCount }
     }
 
-    /** DPAD past either end of a Live TV list wraps to the opposite end. */
-    private fun installWrapAround(list: RecyclerView, count: () -> Int) {
-        list.setOnKeyListener { _, keyCode, event ->
-            if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
-            val total = count()
-            if (total <= 1) return@setOnKeyListener false
-            val child = list.focusedChild ?: return@setOnKeyListener false
-            val position = list.getChildAdapterPosition(child)
-            if (position == RecyclerView.NO_POSITION) return@setOnKeyListener false
-            val target = when {
-                keyCode == KeyEvent.KEYCODE_DPAD_DOWN && position == total - 1 -> 0
-                keyCode == KeyEvent.KEYCODE_DPAD_UP && position == 0 -> total - 1
-                else -> return@setOnKeyListener false
+    /**
+     * A Live TV list whose DPAD wraps at the ends: Down on the last item
+     * focuses the first, Up on the first focuses the last. Intercepted in
+     * dispatchKeyEvent, which every ancestor sees on the way down to the
+     * focused row — an OnKeyListener on the list itself never fires,
+     * because the row, not the list, holds focus.
+     */
+    private fun wrapAwareList(tag: String, cachedViews: Int = 2): RecyclerView {
+        val list = object : RecyclerView(a) {
+            override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
+                if (event?.action == KeyEvent.ACTION_DOWN) {
+                    val total = adapter?.itemCount ?: 0
+                    val child = focusedChild
+                    if (total > 1 && child != null) {
+                        val position = getChildAdapterPosition(child)
+                        val target = when {
+                            event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN && position == total - 1 -> 0
+                            event.keyCode == KeyEvent.KEYCODE_DPAD_UP && position == 0 -> total - 1
+                            else -> null
+                        }
+                        if (target != null) { wrapFocus(this, target, total); return true }
+                    }
+                }
+                return super.dispatchKeyEvent(event)
             }
-            list.scrollToPosition(target)
-            val listener = object : ViewTreeObserver.OnPreDrawListener {
-                override fun onPreDraw(): Boolean {
-                    if (closed || !list.isShown || count() != total) { if (list.viewTreeObserver.isAlive) list.viewTreeObserver.removeOnPreDrawListener(this); return true }
-                    val row = list.findViewHolderForAdapterPosition(target)?.itemView
-                    if (row != null) { list.viewTreeObserver.removeOnPreDrawListener(this); row.requestFocus() }
+        }
+        list.tag = tag; list.layoutManager = LinearLayoutManager(a); list.tune(cachedViews)
+        return list
+    }
+
+    private fun wrapFocus(list: RecyclerView, target: Int, total: Int) {
+        list.scrollToPosition(target)
+        val inputGeneration = a.focusInputGeneration
+        val listener = object : ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                if (closed || !list.isShown || a.focusInputGeneration != inputGeneration || list.adapter?.itemCount != total) {
+                    if (list.viewTreeObserver.isAlive) list.viewTreeObserver.removeOnPreDrawListener(this)
                     return true
                 }
+                val row = list.findViewHolderForAdapterPosition(target)?.itemView
+                if (row != null) { list.viewTreeObserver.removeOnPreDrawListener(this); row.requestFocus() }
+                return true
             }
-            list.viewTreeObserver.addOnPreDrawListener(listener)
-            list.invalidate()
-            true
         }
+        list.viewTreeObserver.addOnPreDrawListener(listener)
+        list.invalidate()
     }
 
     private fun favoriteDescription() = if (m.onlyFavoriteChannels) "★ Favorites only" else "★ Favorites"
