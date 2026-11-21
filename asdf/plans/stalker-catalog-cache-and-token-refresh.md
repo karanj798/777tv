@@ -169,3 +169,24 @@ portal with token-generation requests and risks a rate limit / block.
 
 - TTL: **3 days** (proposed, per "3 days or 5 days") vs 5 days.
   One-line change in the plan; pick at approval.
+
+## Outcome (2026-11-21)
+
+Implemented on feature/stalker-catalog-cache (80163ec), merged to main
+(8d5a132) and pushed. @code-reviewer: approve after one fix (clear the
+force-refresh flag when a Channels load short-circuits). @security-reviewer:
+pass — no secrets in the diff, no token/MAC/portal URL written to the cache
+(key is a SHA-256 hash; contents are genres/channels/savedAt), no new
+permissions or logging; channel command strings sit in app-private storage,
+the same trust level as existing saved titles/history, and tokenized stream
+URLs are never cached (create_link stays live).
+
+Tests: pure-JVM compile of the Stalker/Repository cluster plus both suites
+ran 29 tests — the 8 non-network tests pass; the 21 MockWebServer tests
+could not run on this VM because its permission setting denies direct TCP
+from the JVM (every failure is "Server returned -1", and pristine main
+fails identically, 14/18). Those tests must be re-run where JVM TCP is
+allowed. APK built manually (kotlinc + d8 + apksigner) because the Gradle
+daemon's loopback channel is blocked by the same setting; the APK is
+debug-signed with a fresh key (the previous build's keystore was not
+persisted), so it will not install over the previous delivery in place.
