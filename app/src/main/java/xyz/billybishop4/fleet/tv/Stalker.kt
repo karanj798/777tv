@@ -80,17 +80,37 @@ private class ExpiredPortal : java.io.IOException()
 private class WrongEndpoint : java.io.IOException()
 
 /** Each operation authenticates afresh; short-lived tokens never reach disk or a CDN. */
-class StalkerClient(private val http: Http) {
+class StalkerClient(
+    private val http: Http,
+    private val nowMs: () -> Long = System::currentTimeMillis,
+    private val delayMs: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
+) {
+    companion object {
+        /** Pause before the single allowed re-authentication after a token is rejected. */
+        const val REAUTH_DELAY_MS: Long = 2000
+        /** Minimum spacing between handshakes across operations, so portals are not bombarded with token requests. */
+        const val MIN_HANDSHAKE_INTERVAL_MS: Long = 2000
+    }
     private val operations = Mutex()
+    // Only touched while holding the operations mutex, which every session does.
+    private var lastHandshakeAtMs: Long? = null
     private suspend fun <T> session(provider: Provider, block: suspend Session.() -> T): T = operations.withLock {
         val p = validatedPortal(provider)
         repeat(2) { attempt ->
             try { return Session(p).let { it.authenticate(); it.block() } }
-            catch (e: ExpiredPortal) { if (attempt == 1) throw UserMessage("Portal authorization failed. Check the registered MAC and optional device credentials.") }
+            catch (e: ExpiredPortal) {
+                if (attempt == 1) throw UserMessage("Portal authorization failed. Check the registered MAC and optional device credentials.")
+                // Exactly one re-authentication per operation, and only after a
+                // pause. The mutex is held throughout, so no other operation can
+                // handshake during the wait. An HttpFailure (including 429) is
+                // not caught here and never triggers a re-authentication.
+                delayMs(REAUTH_DELAY_MS)
+            }
         }
         error("Unreachable")
     }
     suspend fun channels(provider: Provider): List<Channel> = session(provider) { channels() }
+    suspend fun catalog(provider: Provider): StalkerCatalog = session(provider) { catalog() }
     suspend fun guide(provider: Provider, channel: Channel): List<GuideProgram> = session(provider) {
         val result = try { call("itv", "get_short_epg", mapOf("ch_id" to channel.id, "size" to "8")) }
         catch (e: HttpFailure) {
@@ -138,6 +158,13 @@ class StalkerClient(private val http: Http) {
             return result
         }
         suspend fun authenticate() {
+            // Space handshakes out across operations: if the previous handshake
+            // was less than the minimum interval ago, wait out the remainder.
+            val last = lastHandshakeAtMs
+            if (last != null) {
+                val wait = MIN_HANDSHAKE_INTERVAL_MS - (nowMs() - last)
+                if (wait > 0) delayMs(wait)
+            }
             val handshake = discoverHandshake()
             token = handshake?.optString("token").orEmpty()
             if (token.isBlank() || token.any { it == '\r' || it == '\n' }) throw ExpiredPortal()
@@ -174,6 +201,7 @@ class StalkerClient(private val http: Http) {
         private suspend fun tryHandshake(candidate: PortalAddress): Pair<Boolean, JSONObject?> {
             for ((index, candidateEndpoint) in candidate.endpoints.withIndex()) {
                 endpoint = candidateEndpoint
+                lastHandshakeAtMs = nowMs()
                 try { return true to (call("stb", "handshake", mapOf("token" to "", "prehash" to "false")) as? JSONObject) }
                 catch (e: WrongEndpoint) { if (index == candidate.endpoints.lastIndex) return false to null }
                 catch (e: HttpFailure) { if (e.status !in listOf(404, 405)) throw e; if (index == candidate.endpoints.lastIndex) return false to null }
@@ -194,7 +222,8 @@ class StalkerClient(private val http: Http) {
                 "auth_second_step" to if (second) "1" else "0", "not_valid_token" to notValid) + identity()
             return call("stb", "get_profile", args) as? JSONObject ?: throw ExpiredPortal()
         }
-        suspend fun channels(): List<Channel> {
+        suspend fun channels(): List<Channel> = catalog().channels
+        suspend fun catalog(): StalkerCatalog {
             val genres = try { rows(call("itv", "get_genres")).associate { it.optString("id") to it.optString("title", "Channels") } }
                 catch (e: HttpFailure) { if (e.status !in listOf(404, 405, 501)) throw e; emptyMap() }
             var response: Any? = try { call("itv", "get_all_channels") }
@@ -217,7 +246,7 @@ class StalkerClient(private val http: Http) {
             // Some portals count hidden/deleted channels in total_items even in
             // their complete get_all_channels response. A bulk response larger
             // than a normal page is already complete; do not fetch it again.
-            if (response != null && (total <= rows(response).size || (pageSize > 0 && rows(response).size > pageSize))) return entries.values.toList()
+            if (response != null && (total <= rows(response).size || (pageSize > 0 && rows(response).size > pageSize))) return StalkerCatalog(genres, entries.values.toList())
             entries.clear()
             for (page in 1..3000) {
                 response = call("itv", "get_ordered_list", mapOf("genre" to "*", "fav" to "0", "sortby" to "number", "p" to page.toString()))
@@ -225,7 +254,7 @@ class StalkerClient(private val http: Http) {
                 val target = (response as? JSONObject)?.optInt("total_items", entries.size) ?: entries.size
                 val count = rows(response).size
                 val capacity = (response as? JSONObject)?.optInt("max_page_items", count) ?: count
-                if (entries.size >= target || count == 0 || (capacity > 0 && count < capacity)) return entries.values.toList()
+                if (entries.size >= target || count == 0 || (capacity > 0 && count < capacity)) return StalkerCatalog(genres, entries.values.toList())
                 if (added == 0) throw UserMessage("The portal stopped returning channel pages. Try refreshing the channels.")
             }
             throw UserMessage("The portal returned too many channel pages.")

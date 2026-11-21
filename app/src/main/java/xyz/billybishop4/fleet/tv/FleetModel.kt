@@ -38,7 +38,7 @@ class FleetModel(application: Application) : AndroidViewModel(application) {
     private var addonDraftValue by state("")
     val addonDraft:String get()=addonDraftValue
     private var fixtureAddons:List<Addon>?=null
-    var repository by state(Repository(addons)); private set
+    var repository by state(Repository(addons, stalkerCatalogCache = store.stalkerCatalogCache())); private set
     private val initialSection = if (preferences.startSection == "Live TV") Section.LIVE else Section.SEARCH
     var route by state<Route>(Route.Browse(initialSection)); private set
     var section by state(initialSection); private set
@@ -68,6 +68,7 @@ class FleetModel(application: Application) : AndroidViewModel(application) {
     var onlyFavoriteChannels by state(false)
     private var browsingProvider = ""
     private var channelProvider: Provider? = null
+    private var forceChannelRefresh = false
     var saved by state(store.saved()); private set
     var progress by state(store.progress()); private set
     var searchText by state(""); private set
@@ -136,7 +137,9 @@ class FleetModel(application: Application) : AndroidViewModel(application) {
         (route as? Route.Detail)?.takeIf { it.title.type=="series" }?.let { page ->
             seriesPages[page.title.key]?.apply { refreshMetadata=true }
         }
-        if (route is Route.Channels) channelProvider = null
+        // On the Channels route, retry is the "Refresh channels" action: it is
+        // the cache-reload path and must bypass the persistent catalog cache.
+        if (route is Route.Channels) { channelProvider = null; forceChannelRefresh = true }
         if (route == Route.Browse(Section.SEARCH)) {
             lastSearch=null;repository.refresh()
             if(searchText.trim().length < 2) { shelves = emptyList();homeWarning=null }
@@ -177,8 +180,9 @@ class FleetModel(application: Application) : AndroidViewModel(application) {
             is Route.Sources -> loadSourceStreams(page.title,page.episode)
             is Route.Channels -> {
                 if (browsingProvider != page.provider.id) { browsingProvider = page.provider.id; channelGroup = "All channels"; channelQuery = ""; onlyFavoriteChannels = false }
-                if (channelProvider == page.provider && channels.isNotEmpty()) cancelLoad()
-                else { channels = emptyList(); request { channels = repository.channels(page.provider); channelProvider = page.provider } }
+                if (channelProvider == page.provider && channels.isNotEmpty()) { forceChannelRefresh = false; cancelLoad() }
+                else { val force = forceChannelRefresh; forceChannelRefresh = false
+                    channels = emptyList(); request { channels = repository.channels(page.provider, force); channelProvider = page.provider } }
             }
             Route.AddProvider -> {
                 cancelLoad()
@@ -356,7 +360,7 @@ class FleetModel(application: Application) : AndroidViewModel(application) {
     fun setAddonDraft(value:String) { addonDraftValue=value;addonEdited() }
     private fun reloadAddons() {
         invalidateSeriesPages()
-        repository=Repository(addons);shelves=emptyList();results=emptyList();searchShelves=emptyList();catalogDefinitions=emptyList();catalogFilter=CatalogFilter();lastSearch=null;homeWarning=null;error=null
+        repository=Repository(addons, stalkerCatalogCache = store.stalkerCatalogCache());shelves=emptyList();results=emptyList();searchShelves=emptyList();catalogDefinitions=emptyList();catalogFilter=CatalogFilter();lastSearch=null;homeWarning=null;error=null
         if(route==Route.Browse(Section.SEARCH) || route is Route.Detail || route is Route.Sources)load()
     }
     private fun saveAddons(value:List<Addon>):Boolean = try {
@@ -472,6 +476,7 @@ class FleetModel(application: Application) : AndroidViewModel(application) {
     }
     fun removeProvider(id: String) {
         try {
+            providers.firstOrNull { it.id == id }?.let { store.deleteStalkerCatalog(it) }
             store.providers(providers.filter { it.id != id }); providers = providers.filter { it.id != id }
             if (preferences.defaultProfileId == id) updatePreferences(preferences.copy(defaultProfileId = providers.firstOrNull { it.kind == "stalker" }?.id.orEmpty()))
             favorites = favorites.filterNot { it.startsWith("$id/") }.toSet(); store.favorites(favorites)
