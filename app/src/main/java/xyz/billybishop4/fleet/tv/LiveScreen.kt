@@ -135,6 +135,37 @@ internal class ChannelsScreen(private val a: MainActivity, private val provider:
             val height = ((r - l) * 9 / 16).coerceAtLeast(a.dp(100))
             if (preview.layoutParams.height != height) preview.layoutParams = preview.layoutParams.apply { this.height = height }
         }
+        installWrapAround(groups) { groupAdapter.itemCount }
+        installWrapAround(grid) { adapter.itemCount }
+    }
+
+    /** DPAD past either end of a Live TV list wraps to the opposite end. */
+    private fun installWrapAround(list: RecyclerView, count: () -> Int) {
+        list.setOnKeyListener { _, keyCode, event ->
+            if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
+            val total = count()
+            if (total <= 1) return@setOnKeyListener false
+            val child = list.focusedChild ?: return@setOnKeyListener false
+            val position = list.getChildAdapterPosition(child)
+            if (position == RecyclerView.NO_POSITION) return@setOnKeyListener false
+            val target = when {
+                keyCode == KeyEvent.KEYCODE_DPAD_DOWN && position == total - 1 -> 0
+                keyCode == KeyEvent.KEYCODE_DPAD_UP && position == 0 -> total - 1
+                else -> return@setOnKeyListener false
+            }
+            list.scrollToPosition(target)
+            val listener = object : ViewTreeObserver.OnPreDrawListener {
+                override fun onPreDraw(): Boolean {
+                    if (closed || !list.isShown || count() != total) { if (list.viewTreeObserver.isAlive) list.viewTreeObserver.removeOnPreDrawListener(this); return true }
+                    val row = list.findViewHolderForAdapterPosition(target)?.itemView
+                    if (row != null) { list.viewTreeObserver.removeOnPreDrawListener(this); row.requestFocus() }
+                    return true
+                }
+            }
+            list.viewTreeObserver.addOnPreDrawListener(listener)
+            list.invalidate()
+            true
+        }
     }
 
     private fun favoriteDescription() = if (m.onlyFavoriteChannels) "★ Favorites only" else "★ Favorites"
