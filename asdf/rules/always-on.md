@@ -4,9 +4,13 @@ These rules apply to every change, every persona, every time.
 
 ## App identity
 
-- The app is named **777tv**. The application ID stays
-  `xyz.billybishop4.fleet.tv` so existing installations update in place.
-  Never change it.
+- The app is named **777tv**. The fork's application ID is
+  `xyz.billybishop4.fleet.tv.dev` — changed from the upstream
+  `xyz.billybishop4.fleet.tv` on 2026-11-21 at Karan's explicit
+  direction, so fork builds install side-by-side with the upstream app
+  on the same TV instead of replacing it. The code namespace stays
+  `xyz.billybishop4.fleet.tv`. Do not change the ID again casually;
+  builds with this ID update each other in place.
 - Production source of truth: the `releases/<version>/` snapshot
   (production.json + SHA256SUMS). A release is not done until its snapshot
   matches the source.

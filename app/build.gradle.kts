@@ -10,7 +10,7 @@ android {
     compileSdk = 36
     buildToolsVersion = "36.0.0"
     defaultConfig {
-        applicationId = "xyz.billybishop4.fleet.tv"
+        applicationId = "xyz.billybishop4.fleet.tv.dev"
         minSdk = 24
         targetSdk = 36
         versionCode = 18
