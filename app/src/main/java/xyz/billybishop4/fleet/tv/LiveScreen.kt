@@ -138,11 +138,12 @@ internal class ChannelsScreen(private val a: MainActivity, private val provider:
     }
 
     /**
-     * A Live TV list whose DPAD wraps at the ends: Down on the last item
-     * focuses the first, Up on the first focuses the last. Intercepted in
-     * dispatchKeyEvent, which every ancestor sees on the way down to the
-     * focused row — an OnKeyListener on the list itself never fires,
-     * because the row, not the list, holds focus.
+     * A Live TV list whose DPAD wraps at the bottom only: Down on the last
+     * item focuses the first. Up on the first item does not wrap — it falls
+     * through to normal focus movement. Intercepted in dispatchKeyEvent,
+     * which every ancestor sees on the way down to the focused row — an
+     * OnKeyListener on the list itself never fires, because the row, not
+     * the list, holds focus.
      */
     private fun wrapAwareList(tag: String, cachedViews: Int = 2): RecyclerView {
         val list = object : RecyclerView(a) {
@@ -152,9 +153,12 @@ internal class ChannelsScreen(private val a: MainActivity, private val provider:
                     val child = focusedChild
                     if (total > 1 && child != null) {
                         val position = getChildAdapterPosition(child)
+                        // Down past the last item wraps to the first.
+                        // Up at the first item deliberately does NOT wrap
+                        // to the last (Karan, 2026-11-22) — the press falls
+                        // through to normal focus movement.
                         val target = when {
                             event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN && position == total - 1 -> 0
-                            event.keyCode == KeyEvent.KEYCODE_DPAD_UP && position == 0 -> total - 1
                             else -> null
                         }
                         if (target != null) { wrapFocus(this, target, total); return true }
