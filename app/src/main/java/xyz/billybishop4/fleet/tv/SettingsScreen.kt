@@ -84,7 +84,8 @@ internal class SettingsScreen(private val a: MainActivity) : NativeScreen {
                 choice("Video fit", listOf("Fit", "Fill", "Zoom"), { m.preferences.videoFit }) { m.updatePreferences(m.preferences.copy(videoFit = it)) }
                 page.gap(12); heading("Audio & subtitles")
                 val language: (String) -> String = { code -> when (code) { "" -> "Provider default"; "en" -> "English"; "es" -> "Spanish"; "hi" -> "Hindi"; "fr" -> "French"; "ja" -> "Japanese"; else -> code } }
-                choice("Preferred audio language", listOf("", "en", "es", "hi", "fr", "ja"), { m.preferences.audioLanguage }, language) { m.updatePreferences(m.preferences.copy(audioLanguage = it)) }
+                val audioLanguageLabel: (String) -> String = { code -> if (code.isEmpty()) "English (default)" else language(code) }
+                choice("Preferred audio language", listOf("", "en", "es", "hi", "fr", "ja"), { m.preferences.audioLanguage }, audioLanguageLabel) { m.updatePreferences(m.preferences.copy(audioLanguage = it)) }
                 toggle("Subtitles by default", { m.preferences.subtitles }) { m.updatePreferences(m.preferences.copy(subtitles = !m.preferences.subtitles)) }
                 choice("Subtitle language", listOf("", "en", "es", "hi", "fr", "ja"), { m.preferences.subtitleLanguage }, language) { m.updatePreferences(m.preferences.copy(subtitleLanguage = it)) }
             }
