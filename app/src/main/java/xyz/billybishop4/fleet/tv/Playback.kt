@@ -24,6 +24,14 @@ internal data class PlaybackSnapshot(val engine:String, val playing:Boolean, val
     val audioTrack:String="",val subtitleText:String="",val frameRateHint:Float=0f,val forwardCapMiB:Int=0,
     val displayFps:Double=0.0,val effectsActive:Boolean=false)
 
+/**
+ * The audio language handed to the track selector. A blank preference means
+ * "no choice made" and must still prefer English — passing no preference at
+ * all lets the selector fall back to track order/bitrate, which on
+ * multi-audio releases often starts on a non-English track.
+ */
+internal fun preferredAudioLanguage(prefs: Preferences): String = prefs.audioLanguage.ifBlank { "en" }
+
 /** One hardware-decoded player per visible attachment; direct add-on URLs. */
 internal class NativePlayback(private val a: MainActivity, private val m: FleetModel, private val original: Watch, private var fullscreen: Boolean = true, private val exit: () -> Unit) {
     val view = FrameLayout(a).apply { setBackgroundColor(INK) }
@@ -90,7 +98,7 @@ internal class NativePlayback(private val a: MainActivity, private val m: FleetM
         view.removeAllViews()
             val source=DefaultHttpDataSource.Factory().setUserAgent(w.headers["User-Agent"]?:"FleetTV/0.11 (Android TV)")
                 .setDefaultRequestProperties(w.headers).setConnectTimeoutMs(15000).setReadTimeoutMs(20000)
-            val tracks=DefaultTrackSelector(a).apply{parameters=buildUponParameters().setPreferredAudioLanguage(prefs.audioLanguage.takeIf{it.isNotBlank()})
+            val tracks=DefaultTrackSelector(a).apply{parameters=buildUponParameters().setPreferredAudioLanguage(preferredAudioLanguage(prefs))
                 .setPreferredTextLanguage(prefs.subtitleLanguage.takeIf{it.isNotBlank()}).setTrackTypeDisabled(C.TRACK_TYPE_TEXT,!prefs.subtitles).setSelectUndeterminedTextLanguage(prefs.subtitles).build()}
             val builder=ExoPlayer.Builder(a).setMediaSourceFactory(DefaultMediaSourceFactory(source)).setTrackSelector(tracks)
                 .setSeekBackIncrementMs(prefs.seekSeconds*1000L).setSeekForwardIncrementMs(prefs.seekSeconds*1000L)
